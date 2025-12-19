@@ -1,33 +1,39 @@
-# Go Rate Limiter 🛡️
+# Go Rate Limiter (Distributed) 🛡️
 
 A thread-safe, distributed-ready API Rate Limiter built from scratch in Go.
-It implements the **Token Bucket Algorithm** to handle traffic bursts while maintaining strict average rate limits.
+It uses **Redis + Lua Scripts** to enforce rate limits atomically across multiple server instances.
 
 ## 🚀 Features
 
-* **Token Bucket Algorithm:** Implements O(1) lazy-refill logic to manage request tokens efficiently.
-* **Thread Safety:** Uses `sync.Mutex` to prevent race conditions during concurrent request processing.
-* **Smart IP Handling:** Correctly identifies users by IP address (automatically stripping dynamic ports).
-* **Observability:** Returns standard `X-RateLimit-*` HTTP headers for client transparency.
-* **Memory Management:** Includes a background "Janitor" Goroutine that automatically cleans up stale clients to prevent memory leaks.
+* **Distributed State:** Uses Redis to share token buckets across multiple server replicas.
+* **Atomic Operations:** Custom Lua script ensures `Get-Calculation-Set` operations happen instantly to prevent race conditions.
+* **Token Bucket Algorithm:** Allows for traffic bursts while maintaining strict average limits.
+* **Fail-Safe:** Defaults to "Fail Closed" if Redis is unreachable (configurable).
+* **Observability:** Returns standard `X-RateLimit-*` HTTP headers.
 
 ## 🛠️ Tech Stack
 
-* **Language:** Go (Golang) 1.25
-* **Standard Lib:** `net/http`, `sync`, `time`, `net` (Zero external dependencies).
+* **Language:** Go (Golang)
+* **Database:** Redis 7+
+* **Libraries:** `go-redis/v9` (Redis Client)
 
 ## ⚡ How to Run
 
-1. **Clone the repository**
+1. **Prerequisites**
+   You must have Redis installed and running.
+
+   ```bash
+   # MacOS
+   brew install redis
+   brew services start redis
+   ```
+
+2. **Clone and Run**
 
    ```bash
    git clone [https://github.com/nadavramon/rate-limiter.git](https://github.com/nadavramon/rate-limiter.git)
    cd rate-limiter
-   ```
-
-2. **Start the server**
-
-   ```bash
+   go mod tidy  # Download dependencies
    go run .
    ```
 
@@ -47,20 +53,15 @@ curl -v http://localhost:8080 && curl -v http://localhost:8080 && curl -v http:/
 
 ## 🧠 Design Decisions
 
+### Why Redis + Lua?
+
+In a distributed system (e.g., 3 API servers behind a Load Balancer), we cannot store state in local memory because Server A doesn't know about requests sent to Server B. I used Redis as the shared source of truth. To prevent race conditions (where two servers read "5 tokens" simultaneously), I implemented the logic in a Lua script. This guarantees that the read-update-write cycle is atomic—no other request can interleave.
+
 ### Why Token Bucket?
 
-I chose the Token Bucket algorithm over a standard Fixed Window counter because it allows for short bursts of traffic (e.g., a user loading a page with 5 assets simultaneously) while still enforcing a strict long-term average rate. This prevents the "use-it-or-lose-it" rigidity of Fixed Window algorithms and provides a smoother experience for real users who rarely send requests at a perfectly constant pace.
+I chose the Token Bucket algorithm to allow for short bursts of traffic (e.g., loading a dashboard) while enforcing a long-term rate limit. This provides a better UX than Fixed Window counters.
 
-### Concurrency Strategy
+🔮 Future Improvements
+Burst-specific policies: Allow per-endpoint or per-API-key rate settings so critical endpoints get tighter control.
 
-Since Go's http handlers run in parallel Goroutines, accessing a shared map of clients is not thread-safe by default. I implemented a sync.Mutex to lock the client map during read/write operations. This ensures that two requests arriving from the same IP at the exact same microsecond do not cause race conditions or incorrect token calculations.
-
-### Resource Management
-
-To prevent Unbounded Memory Growth (a potential DDoS vector), I implemented a "Janitor" process. It runs on a separate Goroutine and periodically scans the client map to delete records of users who haven't made a request in over 3 minutes.
-
-## 🔮 Future Improvements
-
-* **Persistent storage backend:** Swap the in-memory map with Redis or another distributed cache to share limits across multiple instances.
-* **Burst-specific policies:** Allow per-endpoint or per-API-key rate settings so critical endpoints get tighter control.
-* **Prometheus metrics:** Export limiter stats (token counts, rejections, janitor sweeps) for dashboards and alerting.
+Prometheus metrics: Export limiter stats (token counts, rejections, janitor sweeps) for dashboards and alerting
